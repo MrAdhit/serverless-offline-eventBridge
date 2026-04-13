@@ -1,0 +1,18 @@
+{
+  "name": "scheduler-dynamic-example",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Example of dynamic recurring EventBridge Scheduler events via API",
+  "main": "handler.js",
+  "scripts": {
+    "start": "npx serverless offline start"
+  },
+  "dependencies": {
+    "@aws-sdk/client-scheduler": "^3.300.0"
+  },
+  "devDependencies": {
+    "serverless": "^4.0.0",
+    "serverless-offline": "^14.0.0",
+    "serverless-offline-aws-eventbridge": "file:../../.."
+  }
+}

@@ -67,3 +67,28 @@ export function convertScheduleToNodeCron(schedule: string): string | null {
 
   return convertCronExpression(schedule);
 }
+
+/**
+ * Check if the schedule is a one-time at() expression
+ * @example at(2024-01-15T10:00:00)
+ */
+export function isOneTimeSchedule(schedule: string): boolean {
+  return schedule.startsWith('at(');
+}
+
+/**
+ * Parse an at() expression and return the execution Date
+ * @param schedule - Format: at(yyyy-mm-ddThh:mm:ss)
+ * @returns Date object or null if invalid
+ */
+export function parseAtExpression(schedule: string): Date | null {
+  // Format: at(yyyy-mm-ddThh:mm:ss) or at(yyyy-mm-ddThh:mm:ss) with optional timezone
+  const match = schedule.match(/^at\((\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\)$/);
+  if (!match) return null;
+
+  const date = new Date(match[1]);
+  // Check if the date is valid
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date;
+}

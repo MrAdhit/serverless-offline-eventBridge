@@ -1,0 +1,50 @@
+service: scheduler-dynamic-example
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: dev
+  region: us-east-1
+
+plugins:
+  - serverless-offline
+  - serverless-offline-aws-eventbridge
+
+functions:
+  # HTTP endpoint to create recurring schedules dynamically
+  createSchedule:
+    handler: handler.createSchedule
+    events:
+      - http:
+          path: create-schedule
+          method: post
+
+  # HTTP endpoint to delete schedules
+  deleteSchedule:
+    handler: handler.deleteSchedule
+    events:
+      - http:
+          path: delete-schedule
+          method: post
+
+  # HTTP endpoint to list schedules
+  listSchedules:
+    handler: handler.listSchedules
+    events:
+      - http:
+          path: list-schedules
+          method: get
+
+  # Target function that gets invoked by the scheduler
+  targetFunction:
+    handler: handler.target
+
+custom:
+  serverless-offline-aws-eventbridge:
+    port: 4010
+    mockEventBridgeServer: true
+    pubSubPort: 4011
+    debug: true
+    schedulerPort: 4012
+  serverless-offline:
+    httpPort: 3000

@@ -2,6 +2,8 @@ import {
   convertScheduleToNodeCron,
   convertRateExpression,
   convertCronExpression,
+  isOneTimeSchedule,
+  parseAtExpression,
 } from '../utils/schedule-converter';
 
 describe('convertRateExpression', () => {
@@ -130,5 +132,64 @@ describe('convertScheduleToNodeCron', () => {
 
   it('should return null for invalid format', () => {
     expect(convertScheduleToNodeCron('invalid')).toBe(null);
+  });
+});
+
+describe('isOneTimeSchedule', () => {
+  it('should return true for at() expression', () => {
+    expect(isOneTimeSchedule('at(2024-06-15T10:00:00)')).toBe(true);
+  });
+
+  it('should return false for rate expression', () => {
+    expect(isOneTimeSchedule('rate(5 minutes)')).toBe(false);
+  });
+
+  it('should return false for cron expression', () => {
+    expect(isOneTimeSchedule('cron(0 12 * * ? *)')).toBe(false);
+  });
+
+  it('should return false for empty string', () => {
+    expect(isOneTimeSchedule('')).toBe(false);
+  });
+});
+
+describe('parseAtExpression', () => {
+  it('should parse valid at() expression', () => {
+    const result = parseAtExpression('at(2024-06-15T10:30:00)');
+    expect(result).toEqual(new Date('2024-06-15T10:30:00'));
+  });
+
+  it('should parse at() with midnight time', () => {
+    const result = parseAtExpression('at(2024-12-25T00:00:00)');
+    expect(result).toEqual(new Date('2024-12-25T00:00:00'));
+  });
+
+  it('should parse at() with end of day time', () => {
+    const result = parseAtExpression('at(2024-01-01T23:59:59)');
+    expect(result).toEqual(new Date('2024-01-01T23:59:59'));
+  });
+
+  it('should return null for invalid format (missing parentheses)', () => {
+    expect(parseAtExpression('at 2024-06-15T10:00:00')).toBeNull();
+  });
+
+  it('should return null for invalid format (wrong date format)', () => {
+    expect(parseAtExpression('at(06-15-2024T10:00:00)')).toBeNull();
+  });
+
+  it('should return null for invalid date values', () => {
+    expect(parseAtExpression('at(2024-13-45T99:99:99)')).toBeNull();
+  });
+
+  it('should return null for rate expression', () => {
+    expect(parseAtExpression('rate(5 minutes)')).toBeNull();
+  });
+
+  it('should return null for cron expression', () => {
+    expect(parseAtExpression('cron(0 12 * * ? *)')).toBeNull();
+  });
+
+  it('should return null for empty at()', () => {
+    expect(parseAtExpression('at()')).toBeNull();
   });
 });

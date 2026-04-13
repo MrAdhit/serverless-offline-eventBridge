@@ -13,4 +13,6 @@ export interface EventBridgePluginConfigOptions {
   payloadSizeLimit?: string;
   'imported-event-buses'?: { [key: string]: string };
   localStackConfig?: LocalStackPluginConfig;
+  /** Port for the Scheduler mock API server (default: 4012) */
+  schedulerPort?: number;
 }

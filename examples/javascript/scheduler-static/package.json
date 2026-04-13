@@ -1,0 +1,15 @@
+{
+  "name": "scheduler-static-example",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Example of static EventBridge Scheduler events",
+  "main": "handler.js",
+  "scripts": {
+    "start": "npx serverless offline start"
+  },
+  "devDependencies": {
+    "serverless": "^4.0.0",
+    "serverless-offline": "^14.0.0",
+    "serverless-offline-aws-eventbridge": "file:../../.."
+  }
+}

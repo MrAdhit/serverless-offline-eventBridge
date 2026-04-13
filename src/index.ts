@@ -24,6 +24,12 @@ import { setConfig } from './config/config';
 import { Subscriber } from './types/subscriber-interface';
 import { createEventBridgeResources } from './integrations/localstack';
 import { ServerlessResourceTypes } from './utils/serverless';
+import type {
+  SchedulerEvent,
+  ParsedSchedulerEvent,
+} from './types/scheduler-event-interface';
+import { parseSchedulerEvent } from './utils/scheduler-event-parser';
+import { SchedulerServer } from './scheduler-server';
 
 class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
   public hooks: Hooks;
@@ -49,6 +55,10 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
     event: EventBridge;
     functionKey: string;
   }> = [];
+
+  public schedulerEvents: Array<ParsedSchedulerEvent> = [];
+
+  public schedulerServer?: SchedulerServer;
 
   constructor(
     private readonly serverless: Serverless,
@@ -98,6 +108,10 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
       this.eventBridgeServer.close();
     }
 
+    if (this.schedulerServer) {
+      await this.schedulerServer.stop();
+    }
+
     if (this.lambda) {
       await this.lambda.cleanup();
     }
@@ -131,9 +145,11 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
       pluginOptions,
     });
 
-    const { subscribers, lambdas, scheduledEvents } = this.getEvents();
+    const { subscribers, lambdas, scheduledEvents, schedulerEvents } =
+      this.getEvents();
     this.subscribers = subscribers;
     this.scheduledEvents = scheduledEvents;
+    this.schedulerEvents = schedulerEvents;
     this.eventBuses = this.extractCustomBuses();
 
     if (this.config?.localStackConfig.localStackEnabled) {
@@ -147,9 +163,36 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
       this.setupScheduledEvents();
       await this.createLambdas(lambdas);
       this.setupExpressApp();
+      await this.setupSchedulerServer();
+
+      // Update scheduler server with lambda reference
+      if (this.schedulerServer && this.lambda) {
+        this.schedulerServer.setLambda(this.lambda);
+      }
     }
 
     this.logNotice('Plugin ready');
+  }
+
+  private async setupSchedulerServer() {
+    const schedulerPort =
+      this.config?.pluginConfigOptions?.schedulerPort || 4012;
+
+    this.schedulerServer = new SchedulerServer(
+      {
+        port: schedulerPort,
+        region: this.config?.awsConfig.region || 'us-east-1',
+        accountId: this.config?.awsConfig.accountId || '000000000000',
+        debug: this.config?.pluginConfigOptions?.debug || false,
+      },
+      {
+        lambda: this.lambda,
+        logDebug: this.logDebug,
+        logNotice: this.logNotice,
+      }
+    );
+
+    await this.schedulerServer.start();
   }
 
   private setupMqBroker() {
@@ -275,7 +318,7 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
   }
 
   private setupScheduledEvents() {
-    // loop the scheduled events and create a cron for them
+    // Loop the scheduled events (eventBridge with schedule) and create a cron for them
     this.scheduledEvents.forEach((scheduledEvent) => {
       cron.schedule(scheduledEvent.schedule, async () => {
         this.logDebug(`run scheduled function ${scheduledEvent.functionKey}`);
@@ -290,6 +333,76 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
         );
       });
     });
+
+    // Loop the scheduler events (EventBridge Scheduler) with timezone and one-time support
+    this.schedulerEvents.forEach((schedulerEvent) => {
+      if (schedulerEvent.isOneTime && schedulerEvent.executeAt) {
+        // One-time schedule using setTimeout
+        const delay = schedulerEvent.executeAt.getTime() - Date.now();
+        if (delay > 0) {
+          this.logDebug(
+            `scheduling one-time function ${
+              schedulerEvent.functionKey
+            } at ${schedulerEvent.executeAt.toISOString()}`
+          );
+          setTimeout(async () => {
+            this.logDebug(
+              `run one-time scheduler function ${schedulerEvent.functionKey}`
+            );
+            this.invokeSchedulerFunction(schedulerEvent);
+          }, delay);
+        } else {
+          this.logDebug(
+            `one-time schedule for ${schedulerEvent.functionKey} is in the past, skipping`
+          );
+        }
+      } else {
+        // Recurring schedule using node-cron
+        const options: cron.ScheduleOptions = {
+          scheduled: true,
+        };
+        if (schedulerEvent.timezone) {
+          options.timezone = schedulerEvent.timezone;
+        }
+
+        cron.schedule(
+          schedulerEvent.schedule,
+          async () => {
+            this.logDebug(
+              `run scheduler function ${schedulerEvent.functionKey}`
+            );
+            this.invokeSchedulerFunction(schedulerEvent);
+          },
+          options
+        );
+
+        this.logDebug(
+          `Scheduled '${
+            schedulerEvent.functionKey
+          }' via scheduler with syntax ${schedulerEvent.schedule}${
+            schedulerEvent.timezone
+              ? ` (timezone: ${schedulerEvent.timezone})`
+              : ''
+          }`
+        );
+      }
+    });
+  }
+
+  private invokeSchedulerFunction(schedulerEvent: ParsedSchedulerEvent) {
+    const scheduleName =
+      schedulerEvent.event.name || schedulerEvent.functionKey;
+    this.invokeSubscriber(
+      schedulerEvent.functionKey,
+      {
+        Source: 'aws.scheduler',
+        Resources: [
+          `arn:aws:scheduler:${this.config?.awsConfig.region}:${this.config?.awsConfig.accountId}:schedule/default/${scheduleName}`,
+        ],
+        Detail: JSON.stringify({ scheduleName }),
+      },
+      schedulerEvent.event.input
+    );
   }
 
   private async setupLocalStack() {
@@ -663,6 +776,7 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
     const functionKeys = service.getAllFunctions();
     const subscribers = [];
     const scheduledEvents = [];
+    const schedulerEvents: Array<ParsedSchedulerEvent> = [];
     const lambdas: Array<LambdaType> = [];
 
     // eslint-disable-next-line no-restricted-syntax
@@ -742,6 +856,32 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
               }
             }
           }
+
+          // Handle EventBridge Scheduler events
+          if ((event as any).scheduler) {
+            const schedulerConfig = (event as any).scheduler as
+              | SchedulerEvent
+              | string;
+            const parsed = parseSchedulerEvent(schedulerConfig, functionKey);
+            if (parsed) {
+              schedulerEvents.push(parsed);
+              if (parsed.isOneTime) {
+                this.logDebug(
+                  `Scheduled one-time '${functionKey}' at ${parsed.executeAt?.toISOString()}`
+                );
+              } else {
+                this.logDebug(
+                  `Scheduled '${functionKey}' via scheduler with syntax ${
+                    parsed.schedule
+                  }${parsed.timezone ? ` (timezone: ${parsed.timezone})` : ''}`
+                );
+              }
+            } else {
+              this.logDebug(
+                `Invalid or disabled scheduler for '${functionKey}'`
+              );
+            }
+          }
         }
       }
     }
@@ -749,6 +889,7 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
     return {
       subscribers,
       scheduledEvents,
+      schedulerEvents,
       lambdas,
     };
   }

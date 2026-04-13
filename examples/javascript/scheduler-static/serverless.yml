@@ -1,0 +1,47 @@
+service: scheduler-static-example
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: dev
+  region: us-east-1
+
+plugins:
+  - serverless-offline
+  - serverless-offline-aws-eventbridge
+
+functions:
+  # Static scheduler event - runs every minute
+  scheduledTask:
+    handler: handler.run
+    events:
+      - scheduler:
+          schedule: rate(1 minute)
+          timezone: America/New_York
+          input:
+            source: static-config
+            message: Hello from scheduler!
+
+  # Cron-based scheduler event - runs every 5 minutes
+  cronTask:
+    handler: handler.cronRun
+    events:
+      - scheduler:
+          schedule: cron(0/5 * * * ? *)
+          name: five-minute-cron
+
+  # Shorthand syntax
+  simpleTask:
+    handler: handler.simpleRun
+    events:
+      - scheduler: rate(2 minutes)
+
+custom:
+  serverless-offline-aws-eventbridge:
+    port: 4010
+    mockEventBridgeServer: true
+    pubSubPort: 4011
+    debug: true
+    schedulerPort: 4012
+  serverless-offline:
+    httpPort: 3000

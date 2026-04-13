@@ -1,0 +1,34 @@
+service: scheduler-one-time-example
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: dev
+  region: us-east-1
+
+plugins:
+  - serverless-offline
+  - serverless-offline-aws-eventbridge
+
+functions:
+  # HTTP endpoint to create one-time schedules dynamically
+  createOneTimeSchedule:
+    handler: handler.createOneTime
+    events:
+      - http:
+          path: schedule-once
+          method: post
+
+  # Target function that gets invoked by the scheduler
+  targetFunction:
+    handler: handler.target
+
+custom:
+  serverless-offline-aws-eventbridge:
+    port: 4010
+    mockEventBridgeServer: true
+    pubSubPort: 4011
+    debug: true
+    schedulerPort: 4012
+  serverless-offline:
+    httpPort: 3000
