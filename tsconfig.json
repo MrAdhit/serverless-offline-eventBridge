@@ -17,7 +17,12 @@
       "ES2021.String",
       "dom"
     ],
+    "types": [
+      "node",
+      "jest"
+    ],
     "skipLibCheck": true,
+    "isolatedModules": true,
     "skipDefaultLibCheck": true,
     "baseUrl": ".",
     "resolveJsonModule": true,
