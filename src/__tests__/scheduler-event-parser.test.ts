@@ -98,7 +98,8 @@ describe('parseSchedulerEvent', () => {
       expect(result).not.toBeNull();
       expect(result?.schedule).toBe('at(2024-06-15T10:30:00)');
       expect(result?.isOneTime).toBe(true);
-      expect(result?.executeAt).toEqual(new Date('2024-06-15T10:30:00'));
+      // at(...) is interpreted as UTC, matching real AWS behavior.
+      expect(result?.executeAt).toEqual(new Date('2024-06-15T10:30:00Z'));
     });
 
     it('should parse at() with object config', () => {
@@ -112,7 +113,8 @@ describe('parseSchedulerEvent', () => {
       );
 
       expect(result?.isOneTime).toBe(true);
-      expect(result?.executeAt).toEqual(new Date('2024-12-25T09:00:00'));
+      // at(...) is interpreted as UTC, matching real AWS behavior.
+      expect(result?.executeAt).toEqual(new Date('2024-12-25T09:00:00Z'));
       expect(result?.event.name).toBe('christmas-reminder');
       expect(result?.event.input).toEqual({ message: 'Merry Christmas!' });
     });

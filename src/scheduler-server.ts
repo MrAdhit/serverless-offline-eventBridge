@@ -25,12 +25,93 @@ export interface SchedulerServerConfig {
   region: string;
   accountId: string;
   debug: boolean;
+  /**
+   * Serverless service name (e.g. `gigradar-workers-api`). Used together
+   * with `stage` to resolve the LOGICAL function name from a deployed
+   * Lambda ARN at invoke time. Real AWS Scheduler invokes by ARN
+   * (`...:function:${service}-${stage}-${logical}`), but
+   * serverless-offline keys its in-process registry by the LOGICAL name
+   * from `serverless.yml`. Without the strip the plugin can't find the
+   * target Lambda and `runHandler()` blows up on undefined
+   * functionDefinition.
+   */
+  serviceName?: string;
+  /** Serverless stage. See `serviceName`. */
+  stage?: string;
 }
 
 export interface SchedulerServerDependencies {
   lambda?: LambdaType;
   logDebug: (message: string) => void;
   logNotice: (message: string) => void;
+}
+
+/**
+ * Build the event payload that gets passed to the target Lambda when a
+ * schedule fires.
+ *
+ * Real AWS EventBridge Scheduler delivers the `Input` JSON parsed and
+ * unwrapped as the Lambda event. There is NO EventBridge-Rules-shaped
+ * envelope (`{ source, 'detail-type', detail, ... }`) — that schema
+ * belongs to the older EventBridge Rules service (`aws.events`), which
+ * is a different product. Mirroring that here is the whole point of
+ * this helper: tests catch any drift away from real behavior.
+ *
+ * Behavior matrix:
+ *   - `input` omitted / undefined → event is `{}` (matches AWS default)
+ *   - `input` is valid JSON       → event is the parsed value
+ *   - `input` is non-JSON string  → event is the raw string (AWS accepts
+ *                                   any string at the API; the Lambda
+ *                                   handler is responsible for parsing)
+ */
+export function buildSchedulerInvocationEvent(
+  input: string | undefined,
+  logDebug?: (message: string) => void
+): unknown {
+  if (!input) return {};
+  try {
+    return JSON.parse(input);
+  } catch (parseErr) {
+    if (logDebug) {
+      logDebug('Input is not valid JSON, passing raw string');
+    }
+    return input;
+  }
+}
+
+/**
+ * Map a real-AWS-shaped Lambda ARN back to the LOGICAL function name
+ * that serverless-offline keys its in-process registry by.
+ *
+ * Real deployed Lambdas under serverless follow the convention
+ * `${service}-${stage}-${logical}` for the function-name segment of
+ * their ARN. serverless-offline's `lambda.get(name)` only knows about
+ * the logical name from `serverless.yml`, so passing the deployed
+ * name returns a stub whose downstream `runHandler()` call fails on
+ * `Cannot destructure property 'handler' of 'functionDefinition' as
+ * it is undefined`.
+ *
+ * Behavior:
+ *   - If `serviceName` and `stage` are both provided AND the deployed
+ *     name starts with `${serviceName}-${stage}-`, strip that prefix.
+ *   - Otherwise return the deployed name unchanged (covers older
+ *     example usage where the ARN's function segment was already the
+ *     logical name).
+ */
+export function resolveLogicalFunctionName(
+  targetArn: string,
+  serviceName?: string,
+  stage?: string
+): string {
+  const arnParts = targetArn.split(':');
+  const deployedName = arnParts[arnParts.length - 1];
+  if (serviceName && stage) {
+    const prefix = `${serviceName}-${stage}-`;
+    if (deployedName.startsWith(prefix)) {
+      return deployedName.slice(prefix.length);
+    }
+  }
+  return deployedName;
 }
 
 /**
@@ -431,43 +512,94 @@ export class SchedulerServer {
   private invokeTarget(stored: StoredSchedule) {
     this.deps.logDebug(`Invoking target for schedule: ${stored.name}`);
 
-    // Extract function name from ARN
-    // Format: arn:aws:lambda:region:account:function:functionName
-    const arnParts = stored.targetArn.split(':');
-    const functionName = arnParts[arnParts.length - 1];
-
     if (!this.deps.lambda) {
       this.deps.logDebug('Lambda not available, cannot invoke target');
       return;
     }
 
-    try {
-      const lambdaFunction = this.deps.lambda.get(functionName);
-      if (!lambdaFunction) {
-        this.deps.logDebug(`Lambda function ${functionName} not found`);
-        return;
+    const arnParts = stored.targetArn.split(':');
+    const deployedName = arnParts[arnParts.length - 1];
+    const logicalName = resolveLogicalFunctionName(
+      stored.targetArn,
+      this.config.serviceName,
+      this.config.stage
+    );
+
+    // Diagnostic: dump the lookup state so a registry mismatch surfaces
+    // in logs instead of crashing the offline server. Real AWS Lambda
+    // ARNs end with the DEPLOYED function name; serverless-offline's
+    // in-process registry indexes by both DEPLOYED name (via
+    // `getByFunctionName`) AND by LOGICAL name (via `get`). If neither
+    // form is in the map the pool falls back to constructing a fresh
+    // LambdaFunction with `functionDefinition = undefined`, which then
+    // explodes inside the constructor.
+    type LambdaWithIntrospection = {
+      getByFunctionName?: (name: string) => unknown;
+      get(name: string): unknown;
+      listFunctionNames?: () => string[];
+      listFunctionNamePairs?: () => Record<string, string>;
+    };
+    const lambda = this.deps.lambda as unknown as LambdaWithIntrospection;
+
+    const knownDeployedNames = lambda.listFunctionNames
+      ? lambda.listFunctionNames()
+      : ['<listFunctionNames unavailable>'];
+    this.deps.logDebug(
+      `Lookup for ${
+        stored.name
+      }: targetArn-derived deployedName=${deployedName} logicalName=${logicalName} serviceName=${
+        this.config.serviceName ?? '<unset>'
+      } stage=${
+        this.config.stage ?? '<unset>'
+      } registry-known-deployed-names=${JSON.stringify(knownDeployedNames)}`
+    );
+
+    // Try getByFunctionName first (real-AWS shape). Wrap in try because
+    // serverless-offline crashes inside the chain rather than returning
+    // undefined when the mapping is missing.
+    let lambdaFunction: unknown;
+    if (typeof lambda.getByFunctionName === 'function') {
+      try {
+        lambdaFunction = lambda.getByFunctionName(deployedName);
+      } catch (err) {
+        this.deps.logDebug(
+          `getByFunctionName(${deployedName}) threw: ${
+            (err as Error).message || err
+          }`
+        );
       }
+    }
+    if (!lambdaFunction) {
+      // Fallback: try the prefix-stripped logical name.
+      try {
+        lambdaFunction = lambda.get(logicalName);
+      } catch (err) {
+        this.deps.logDebug(
+          `get(${logicalName}) threw: ${(err as Error).message || err}`
+        );
+      }
+    }
+    if (!lambdaFunction) {
+      this.deps.logDebug(
+        `Lambda function for ${deployedName} (logical: ${logicalName}) not found in registry`
+      );
+      return;
+    }
 
-      // Create scheduler event payload
-      const event = {
-        version: '0',
-        id: `xxxxxxxx-xxxx-xxxx-xxxx-${Date.now()}`,
-        'detail-type': 'Scheduled Event',
-        source: 'aws.scheduler',
-        account: this.config.accountId,
-        time: new Date().toISOString(),
-        region: this.config.region,
-        resources: [stored.arn],
-        detail: stored.input ? JSON.parse(stored.input) : {},
-      };
+    try {
+      const event = buildSchedulerInvocationEvent(stored.input, (msg) =>
+        this.deps.logDebug(`Schedule ${stored.name}: ${msg}`)
+      );
 
-      lambdaFunction.setEvent(event);
-      lambdaFunction.runHandler();
+      (lambdaFunction as { setEvent(e: unknown): void }).setEvent(event);
+      (lambdaFunction as { runHandler(): unknown }).runHandler();
 
-      this.deps.logDebug(`Invoked ${functionName} for schedule ${stored.name}`);
+      this.deps.logDebug(`Invoked ${deployedName} for schedule ${stored.name}`);
     } catch (err) {
       this.deps.logDebug(
-        `Error invoking target: ${(err as Error).message || err}`
+        `Error invoking target ${deployedName}: ${
+          (err as Error).message || err
+        }`
       );
     }
   }

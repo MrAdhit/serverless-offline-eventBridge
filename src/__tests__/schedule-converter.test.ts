@@ -154,19 +154,35 @@ describe('isOneTimeSchedule', () => {
 });
 
 describe('parseAtExpression', () => {
-  it('should parse valid at() expression', () => {
+  // Real AWS treats at(...) as UTC by default. Earlier versions parsed
+  // the string with `new Date(local-ISO)`, which V8 interprets in the
+  // host's local timezone. On any non-UTC host that drifted the fire
+  // time by the local offset; on east-of-UTC hosts a "future" schedule
+  // could land in the past, the resulting negative `delay` would skip
+  // the setTimeout entirely, and the schedule silently never fired.
+  // Lock UTC semantics so a host-timezone change can't reintroduce it.
+  it('should parse valid at() expression as UTC', () => {
     const result = parseAtExpression('at(2024-06-15T10:30:00)');
-    expect(result).toEqual(new Date('2024-06-15T10:30:00'));
+    expect(result).toEqual(new Date('2024-06-15T10:30:00Z'));
   });
 
-  it('should parse at() with midnight time', () => {
+  it('should parse at() with midnight time as UTC', () => {
     const result = parseAtExpression('at(2024-12-25T00:00:00)');
-    expect(result).toEqual(new Date('2024-12-25T00:00:00'));
+    expect(result).toEqual(new Date('2024-12-25T00:00:00Z'));
   });
 
-  it('should parse at() with end of day time', () => {
+  it('should parse at() with end of day time as UTC', () => {
     const result = parseAtExpression('at(2024-01-01T23:59:59)');
-    expect(result).toEqual(new Date('2024-01-01T23:59:59'));
+    expect(result).toEqual(new Date('2024-01-01T23:59:59Z'));
+  });
+
+  it('returns the same epoch ms regardless of host timezone interpretation', () => {
+    // Backstop: if a future refactor drops the 'Z' append, V8 will
+    // interpret the string as host-local time, producing a different
+    // number on any non-UTC CI runner and tripping this assertion.
+    const result = parseAtExpression('at(2024-06-15T10:30:00)');
+    expect(result?.getTime()).toBe(Date.UTC(2024, 5, 15, 10, 30, 0));
+    expect(result?.getTime()).toBe(1718447400000);
   });
 
   it('should return null for invalid format (missing parentheses)', () => {

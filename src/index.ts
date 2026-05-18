@@ -184,6 +184,21 @@ class ServerlessOfflineAwsEventBridgePlugin implements Plugin {
         region: this.config?.awsConfig.region || 'us-east-1',
         accountId: this.config?.awsConfig.accountId || '000000000000',
         debug: this.config?.pluginConfigOptions?.debug || false,
+        // Required by invokeTarget so it can map a real-AWS-shaped
+        // Lambda ARN back to the LOGICAL function name that
+        // serverless-offline keys its in-process registry by. See
+        // SchedulerServerConfig.serviceName for the failure mode when
+        // these are omitted.
+        // Both `service.service` and `provider.stage` are typed
+        // `string | null` upstream; coerce to undefined so the
+        // SchedulerServerConfig type stays simple `string | undefined`.
+        serviceName: this.serverless.service.service ?? undefined,
+        stage: ((): string | undefined => {
+          const providerStage = this.serverless.service.provider.stage;
+          const optionStage = (this.options as unknown as { stage?: string })
+            .stage;
+          return providerStage ?? optionStage ?? undefined;
+        })(),
       },
       {
         lambda: this.lambda,

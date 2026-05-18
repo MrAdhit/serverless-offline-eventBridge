@@ -77,17 +77,29 @@ export function isOneTimeSchedule(schedule: string): boolean {
 }
 
 /**
- * Parse an at() expression and return the execution Date
+ * Parse an at() expression and return the execution Date.
+ *
+ * Real AWS EventBridge Scheduler treats the time as UTC by default
+ * (and as `ScheduleExpressionTimezone` when supplied). JavaScript's
+ * `new Date('2024-01-15T10:00:00')` (no zone designator) treats the
+ * string as LOCAL time, which makes the plugin schedule one-shot
+ * timers at the wrong wall-clock moment. Worse: when the host is
+ * east of UTC, a "future" UTC schedule typically lands in the past
+ * once parsed as local, the resulting negative delay drops the
+ * `setTimeout` call entirely, and the schedule silently never fires.
+ *
+ * Force UTC parsing by appending 'Z'. Matches AWS's default behavior.
+ *
  * @param schedule - Format: at(yyyy-mm-ddThh:mm:ss)
- * @returns Date object or null if invalid
+ * @returns Date object (interpreted as UTC) or null if invalid
  */
 export function parseAtExpression(schedule: string): Date | null {
-  // Format: at(yyyy-mm-ddThh:mm:ss) or at(yyyy-mm-ddThh:mm:ss) with optional timezone
+  // Format: at(yyyy-mm-ddThh:mm:ss).
   const match = schedule.match(/^at\((\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\)$/);
   if (!match) return null;
 
-  const date = new Date(match[1]);
-  // Check if the date is valid
+  // Append 'Z' so V8 parses as UTC instead of host-local time.
+  const date = new Date(`${match[1]}Z`);
   if (Number.isNaN(date.getTime())) return null;
 
   return date;
